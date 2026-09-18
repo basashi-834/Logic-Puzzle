@@ -4,6 +4,7 @@
  *   ・端子どうしをドラッグして配線
  *   ・入力スイッチをクリックして 0/1 を切り替え
  *   ・ごみ箱へドロップ / Delete キー / 右クリック で削除
+ *   ・2 本指ピンチで拡大縮小、1 本指（背景）で画面移動。Ctrl+ホイールでも拡大縮小
  * ========================================================================= */
 (function (global) {
   'use strict';
@@ -12,6 +13,7 @@
 
   const BW = 980, BH = 540;                 // 盤面の論理サイズ
   const TRASH = { x: BW - 118, y: BH - 86, w: 100, h: 70 };
+  const MIN_K = 0.6, MAX_K = 4;             // 拡大率の下限・上限
 
   function cls(v) { return v === 1 ? 'v1' : v === 0 ? 'v0' : 'vx'; }
 
@@ -23,6 +25,9 @@
       this.notation = this.opts.notation || 'MIL';
       this.selected = null;                  // {type:'node'|'wire', id}
       this.drag = null;
+      this.view = { x: 0, y: 0, k: 1 };      // 盤面の表示位置と拡大率
+      this.pointers = new Map();             // 画面に触れているポインタ
+      this.pinch = null;
       this.values = new Map();
       this.loop = false;
       this._build();
@@ -39,20 +44,26 @@
             '<path d="M26 0 H0 V26" fill="none" stroke="rgba(30,50,80,.07)" stroke-width="1"/>' +
           '</pattern>' +
         '</defs>' +
-        '<rect class="board-bg" x="0" y="0" width="' + BW + '" height="' + BH + '" fill="url(#grid)"/>' +
-        '<g class="layer-wires"></g>' +
-        '<g class="layer-nodes"></g>' +
-        '<path class="temp-wire" d="" style="display:none"/>' +
+        '<rect class="board-outer" x="-2000" y="-2000" width="5000" height="5000"/>' +
+        '<g class="viewport">' +
+          '<rect class="board-paper" x="0" y="0" width="' + BW + '" height="' + BH + '"/>' +
+          '<rect class="board-bg" x="0" y="0" width="' + BW + '" height="' + BH + '" fill="url(#grid)"/>' +
+          '<g class="layer-wires"></g>' +
+          '<g class="layer-nodes"></g>' +
+          '<path class="temp-wire" d="" style="display:none"/>' +
+        '</g>' +
         '<g class="trash" transform="translate(' + TRASH.x + ',' + TRASH.y + ')">' +
           '<rect class="trash-box" x="0" y="0" width="' + TRASH.w + '" height="' + TRASH.h + '" rx="12"/>' +
           '<text class="trash-icon" x="' + TRASH.w / 2 + '" y="34">🗑</text>' +
           '<text class="trash-text" x="' + TRASH.w / 2 + '" y="56">ごみ箱</text>' +
         '</g>';
+      this.$view = this.svg.querySelector('.viewport');
       this.$wires = this.svg.querySelector('.layer-wires');
       this.$nodes = this.svg.querySelector('.layer-nodes');
       this.$temp = this.svg.querySelector('.temp-wire');
       this.$trash = this.svg.querySelector('.trash');
 
+      this.svg.addEventListener('wheel', (e) => this._onWheel(e), { passive: false });
       this.svg.addEventListener('pointerdown', (e) => this._onDown(e));
       this.svg.addEventListener('dblclick', (e) => this._onDblClick(e));
       this.svg.addEventListener('contextmenu', (e) => this._onContext(e));
@@ -61,11 +72,103 @@
       window.addEventListener('pointermove', this._onMove);
       window.addEventListener('pointerup', this._onUp);
       window.addEventListener('pointercancel', this._onUp);
+      this._buildZoomUI();
+      this._applyView();
+    }
+
+    /* ---------------- 拡大縮小・画面移動 ---------------- */
+    _buildZoomUI() {
+      const wrap = this.svg.parentNode;
+      if (!wrap) return;
+      const el = document.createElement('div');
+      el.className = 'board-zoom';
+      el.innerHTML =
+        '<button type="button" data-z="out" title="縮小">−</button>' +
+        '<span class="zoom-pct">100%</span>' +
+        '<button type="button" data-z="in" title="拡大">＋</button>' +
+        '<button type="button" data-z="fit" title="全体表示に戻す">⟲</button>';
+      wrap.appendChild(el);
+      this.$zoomPct = el.querySelector('.zoom-pct');
+      el.addEventListener('click', (e) => {
+        const b = e.target.closest('button');
+        if (!b) return;
+        const z = b.getAttribute('data-z');
+        if (z === 'fit') this.resetView();
+        else this.zoomAt({ x: BW / 2, y: BH / 2 }, z === 'in' ? 1.25 : 0.8);
+      });
+    }
+
+    _applyView() {
+      const v = this.view;
+      v.k = Math.min(MAX_K, Math.max(MIN_K, v.k));
+      const m = 0.3;                                    // 盤面が最低 3 割は見えるように制限する
+      v.x = Math.min(BW * (1 - m), Math.max(BW * m - BW * v.k, v.x));
+      v.y = Math.min(BH * (1 - m), Math.max(BH * m - BH * v.k, v.y));
+      this.$view.setAttribute('transform', 'translate(' + v.x.toFixed(2) + ',' + v.y.toFixed(2) + ') scale(' + v.k.toFixed(4) + ')');
+      if (this.$zoomPct) this.$zoomPct.textContent = Math.round(v.k * 100) + '%';
+    }
+
+    /** SVG 座標 p を固定したまま拡大率を factor 倍する */
+    zoomAt(p, factor) {
+      const k0 = this.view.k;
+      const k = Math.min(MAX_K, Math.max(MIN_K, k0 * factor));
+      if (k === k0) return;
+      this.view.x = p.x - (p.x - this.view.x) * (k / k0);
+      this.view.y = p.y - (p.y - this.view.y) * (k / k0);
+      this.view.k = k;
+      this._applyView();
+    }
+
+    resetView() { this.view = { x: 0, y: 0, k: 1 }; this._applyView(); }
+
+    _onWheel(e) {
+      if (!(e.ctrlKey || e.metaKey)) return;             // 通常のホイールはページ送りのまま
+      e.preventDefault();
+      this.zoomAt(this.toSvg(e), Math.pow(0.99, e.deltaY));
+    }
+
+    _beginPan(e) {
+      const p = this.toSvg(e);
+      this.drag = { mode: 'pan', sx: p.x, sy: p.y, vx: this.view.x, vy: this.view.y, moved: false };
+    }
+
+    _beginPinch() {
+      const pts = [...this.pointers.values()];
+      if (pts.length < 2) return;
+      this.drag = null;
+      this.$temp.style.display = 'none';
+      this.$trash.classList.remove('hot');
+      const [a, b] = pts;
+      this.pinch = {
+        d0: Math.hypot(a.x - b.x, a.y - b.y) || 1,
+        mid0: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
+        k0: this.view.k, x0: this.view.x, y0: this.view.y
+      };
+    }
+
+    _pinchMove() {
+      const pts = [...this.pointers.values()];
+      if (pts.length < 2 || !this.pinch) return;
+      const [a, b] = pts;
+      const p = this.pinch;
+      const d = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+      const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      const k = Math.min(MAX_K, Math.max(MIN_K, p.k0 * d / p.d0));
+      this.view.k = k;
+      this.view.x = mid.x - ((p.mid0.x - p.x0) / p.k0) * k;   // 指の中心にある点を動かさない
+      this.view.y = mid.y - ((p.mid0.y - p.y0) / p.k0) * k;
+      this._applyView();
+    }
+
+    /** いま画面に見えている範囲（盤面座標） */
+    _visibleRect() {
+      const v = this.view;
+      return { x: -v.x / v.k, y: -v.y / v.k, w: BW / v.k, h: BH / v.k };
     }
 
     /* ---------------- 座標変換 ---------------- */
-    toBoard(e) {
-      const m = this.svg.getScreenCTM();
+    _toLocal(el, e) {
+      const m = el.getScreenCTM();
       if (!m) return { x: 0, y: 0 };
       const inv = m.inverse();
       let p;
@@ -73,6 +176,12 @@
       else { const q = this.svg.createSVGPoint(); q.x = e.clientX; q.y = e.clientY; p = q.matrixTransform(inv); }
       return { x: p.x, y: p.y };
     }
+
+    /** 部品の座標系（拡大縮小・移動の影響を受ける） */
+    toBoard(e) { return this._toLocal(this.$view, e); }
+
+    /** 画面に固定された座標系（ごみ箱の判定などに使う） */
+    toSvg(e) { return this._toLocal(this.svg, e); }
 
     /* ---------------- 描画 ---------------- */
     setNotation(n) { this.notation = n; this.render(); }
@@ -173,6 +282,10 @@
     /* ---------------- 操作 ---------------- */
     _onDown(e) {
       if (e.button === 2) return;
+      this.pointers.set(e.pointerId, this.toSvg(e));
+      if (this.pointers.size === 2) { e.preventDefault(); this._beginPinch(); return; }   // 2 本指はピンチ
+      if (this.pointers.size > 2) return;
+      if (e.button === 1) { e.preventDefault(); this._beginPan(e); return; }              // 中ボタンで画面移動
       const t = e.target;
       const port = t.closest ? t.closest('.port') : null;
       if (port) {
@@ -208,7 +321,8 @@
         this.drag = { mode: 'node', id: n.id, dx: p.x - n.x, dy: p.y - n.y, moved: false, isNew: false, startX: e.clientX, startY: e.clientY, dist: 0 };
         return;
       }
-      this.select(null);
+      e.preventDefault();
+      this._beginPan(e);          // 背景のドラッグは画面移動（動かさずに離せば選択解除）
     }
 
     /** パレットからのドラッグ開始（app.js から呼ばれる） */
@@ -249,7 +363,17 @@
     }
 
     _move(e) {
+      if (this.pointers.has(e.pointerId)) this.pointers.set(e.pointerId, this.toSvg(e));
+      if (this.pinch) { this._pinchMove(); return; }
       if (!this.drag) return;
+      if (this.drag.mode === 'pan') {
+        const q = this.toSvg(e);
+        this.view.x = this.drag.vx + (q.x - this.drag.sx);
+        this.view.y = this.drag.vy + (q.y - this.drag.sy);
+        if (Math.abs(q.x - this.drag.sx) + Math.abs(q.y - this.drag.sy) > 4) this.drag.moved = true;
+        this._applyView();
+        return;
+      }
       const p = this.toBoard(e);
       if (this.drag.mode === 'node') {
         const n = this.circuit.nodes.get(this.drag.id);
@@ -260,7 +384,7 @@
         this.drag.moved = true;
         this.drag.dist = Math.max(this.drag.dist || 0,
           Math.abs(e.clientX - (this.drag.startX || e.clientX)) + Math.abs(e.clientY - (this.drag.startY || e.clientY)));
-        const del = !n.fixed && this._overTrash(p);
+        const del = !n.fixed && this._overTrash(this.toSvg(e));
         this.$trash.classList.toggle('hot', del);
         this.render();
       } else if (this.drag.mode === 'wire') {
@@ -278,11 +402,22 @@
     }
 
     _up(e) {
+      this.pointers.delete(e.pointerId);
+      if (this.pinch) {
+        if (this.pointers.size < 2) this.pinch = null;
+        this.drag = null;
+        return;
+      }
       const d = this.drag;
       this.drag = null;
       this.$temp.style.display = 'none';
       this.$trash.classList.remove('hot');
       if (!d) return;
+
+      if (d.mode === 'pan') {
+        if (!d.moved) this.select(null);
+        return;
+      }
       const p = this.toBoard(e);
 
       if (d.mode === 'node') {
@@ -290,7 +425,7 @@
         if (!n) return;
         const rect = this.svg.getBoundingClientRect();
         const outside = e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom;
-        if (!n.fixed && (this._overTrash(p) || (d.isNew && outside && (d.dist || 0) > 10))) {
+        if (!n.fixed && (this._overTrash(this.toSvg(e)) || (d.isNew && outside && (d.dist || 0) > 10))) {
           this.circuit.remove(n.id);
           this.select(null);
           this.render();
@@ -378,15 +513,18 @@
     _autoPlace(n) {
       const sz = LP.sizeOf(n);
       const used = [...this.circuit.nodes.values()].filter(o => o.id !== n.id);
-      for (let col = 0; col < 6; col++) {
-        for (let row = 0; row < 6; row++) {
-          const x = 250 + col * 120, y = 64 + row * 88;
+      const vis = this._visibleRect();
+      const x0 = Math.max(vis.x + 30, 160), y0 = Math.max(vis.y + 24, 40);
+      for (let col = 0; col < 8; col++) {
+        for (let row = 0; row < 8; row++) {
+          const x = x0 + col * 120, y = y0 + row * 88;
+          if (x + sz.w > vis.x + vis.w || y + sz.h > vis.y + vis.h) continue;
           if (x + sz.w > TRASH.x - 10 && y + sz.h > TRASH.y - 10) continue;
           const hit = used.some(o => Math.abs(o.x - x) < 100 && Math.abs(o.y - y) < 60);
           if (!hit) { n.x = x; n.y = y; this._clamp(n); return; }
         }
       }
-      n.x = 200; n.y = 80; this._clamp(n);
+      n.x = x0; n.y = y0; this._clamp(n);
     }
 
     _flash(msg) { if (this.opts.onMessage) this.opts.onMessage(msg); }

@@ -76,6 +76,7 @@
 
     pzBoard.circuit = buildStageCircuit(st);
     pzBoard.selected = null;
+    pzBoard.resetView();
     bindPalette($('#pzPalette'), pzBoard);
 
     /* 目標パネル */
@@ -257,6 +258,7 @@
     '<div><b>④ 消す</b><p>部品を<b>ごみ箱へドラッグ</b>、または<b>ダブルクリック</b>／<b>右クリック</b>。線はクリックして選び Delete キー、または右クリックで消せます。</p></div>' +
     '<div><b>⑤ 結果を読む</b><p>右側の<b>真理値表</b>・<b>ベン図</b>・<b>論理式</b>は、回路を変えるたびに自動で作り直されます。真理値表は全部の入力の組み合わせを一気に計算しています。</p></div>' +
     '<div><b>⑥ 記号の流派</b><p>右上で <b>MIL 記号</b>（特殊形状）と <b>JIS 記号</b>（長方形）を切り替えられます。教科書に合わせて選んでください。</p></div>' +
+    '<div><b>⑦ 拡大・移動</b><p>スマホ・タブレットでは<b>2 本指のピンチ</b>で拡大縮小、<b>背景を 1 本指でなぞる</b>と画面が動きます。パソコンでは盤面左下の <b>＋ − ⟲</b> ボタン、<b>Ctrl（⌘）＋ホイール</b>、<b>背景のドラッグ</b>が使えます。</p></div>' +
     '</div><div class="modal-actions"><button class="btn primary" data-close>とじる</button></div>';
 
   /* ===================== タブ ===================== */
@@ -323,11 +325,13 @@
     $('#sbClear').addEventListener('click', () => {
       sbBoard.circuit = new LP.Circuit();
       sbBoard.selected = null;
+      sbBoard.resetView();
       sbBoard.render();
     });
     $('#sbReset').addEventListener('click', () => {
       sbBoard.circuit = defaultSandbox();
       sbBoard.selected = null;
+      sbBoard.resetView();
       sbBoard.render();
     });
 
