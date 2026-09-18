@@ -51,6 +51,7 @@
           '<rect class="board-bg" x="0" y="0" width="' + BW + '" height="' + BH + '" fill="url(#grid)"/>' +
           '<g class="layer-wires"></g>' +
           '<g class="layer-nodes"></g>' +
+          '<g class="layer-overlay"></g>' +
           '<path class="temp-wire" d="" style="display:none"/>' +
         '</g>' +
         '<g class="trash" transform="translate(' + TRASH.x + ',' + TRASH.y + ')">' +
@@ -61,6 +62,7 @@
       this.$view = this.svg.querySelector('.viewport');
       this.$wires = this.svg.querySelector('.layer-wires');
       this.$nodes = this.svg.querySelector('.layer-nodes');
+      this.$overlay = this.svg.querySelector('.layer-overlay');
       this.$temp = this.svg.querySelector('.temp-wire');
       this.$trash = this.svg.querySelector('.trash');
 
@@ -209,6 +211,7 @@
       this.loop = res.loop;
       this.$wires.innerHTML = this._wiresSVG();
       this.$nodes.innerHTML = this._nodesSVG();
+      this.$overlay.innerHTML = this._overlaySVG();
       if (this.opts.onChange) this.opts.onChange(this);
     }
 
@@ -234,6 +237,34 @@
         s += n.kind === 'gate' ? this._gateSVG(n) : n.kind === 'in' ? this._inSVG(n) : this._outSVG(n);
       }
       return s;
+    }
+
+    /** 選択中の線・部品に「✕（削除）」ボタンを描く */
+    _overlaySVG() {
+      const sel = this.selected;
+      if (!sel) return '';
+      let x, y;
+      if (sel.type === 'wire') {
+        const w = this.circuit.wires.get(sel.id);
+        if (!w) return '';
+        const a = this.circuit.nodes.get(w.from), b = this.circuit.nodes.get(w.to);
+        if (!a || !b) return '';
+        const p1 = LP.portPos(a, 'out', 0), p2 = LP.portPos(b, 'in', w.port);
+        x = (p1.x + p2.x) / 2;                 // ベジエ曲線の中点＝両端の中点
+        y = (p1.y + p2.y) / 2;
+      } else {
+        const n = this.circuit.nodes.get(sel.id);
+        if (!n || n.fixed) return '';          // 固定部品は消せないのでボタンも出さない
+        const sz = LP.sizeOf(n);
+        x = n.x + sz.w + 4;
+        y = n.y - 10;
+      }
+      return '<g class="del-btn" data-del="1">' +
+             '<circle class="del-hit" cx="' + x + '" cy="' + y + '" r="30"/>' +   // 指でも押せる当たり判定
+             '<circle cx="' + x + '" cy="' + y + '" r="16"/>' +
+             '<path d="M' + (x - 5.5) + ' ' + (y - 5.5) + ' L' + (x + 5.5) + ' ' + (y + 5.5) +
+             ' M' + (x + 5.5) + ' ' + (y - 5.5) + ' L' + (x - 5.5) + ' ' + (y + 5.5) + '"/>' +
+             '</g>';
     }
 
     _selCls(n) {
@@ -330,6 +361,11 @@
       if (this.pointers.size > 2) return;
       if (e.button === 1) { e.preventDefault(); this._beginPan(e); return; }              // 中ボタンで画面移動
       const t = e.target;
+      if (t.closest && t.closest('[data-del]')) {                                          // ✕ ボタン
+        e.preventDefault();
+        this.deleteSelected();
+        return;
+      }
       const port = t.closest ? t.closest('.port') : null;
       if (port) {
         e.preventDefault();
@@ -520,9 +556,11 @@
       if (a) { this._connect(a, p); return; }
       this.armed = { id: p.id, dir: p.dir, port: p.port };
       this.select(null);
+      const wired = p.dir === 'in' && this.circuit.wireInto(p.id, p.port);
       this.hint(p.dir === 'out'
         ? 'つなぎ先の<b>入力（左）</b>をタップ　―　部品の本体でも OK'
-        : 'つなぎ元の<b>出力（右）</b>をタップ　―　部品の本体でも OK');
+        : wired ? 'もう一度この端子をタップすると<b>線が外れます</b>'
+                : 'つなぎ元の<b>出力（右）</b>をタップ　―　部品の本体でも OK');
       this.render();
     }
 
@@ -579,16 +617,26 @@
       }
     }
 
-    select(sel) { this.selected = sel; this.render(); }
+    select(sel) {
+      this.selected = sel;
+      if (sel && sel.type === 'wire') this.hint('線を選びました　―　<b>✕</b> をタップで削除');
+      else if (sel && sel.type === 'node') {
+        const n = this.circuit.nodes.get(sel.id);
+        if (n && !n.fixed) this.hint('部品を選びました　―　<b>✕</b> をタップで削除');
+        else this.hint(null);
+      } else this.hint(null);
+      this.render();
+    }
 
     deleteSelected() {
       const s = this.selected;
-      if (!s) { this._flash('削除するものを選んでください'); return; }
-      if (s.type === 'wire') this.circuit.removeWire(s.id);
+      if (!s) { this._flash('削除するものを選んでください'); this.hint('消したい線や部品をタップしてから削除してください', 'warn'); return; }
+      if (s.type === 'wire') { this.circuit.removeWire(s.id); this.hint('線を消しました', 'info'); }
       else {
         const n = this.circuit.nodes.get(s.id);
-        if (n && n.fixed) { this._flash('この部品は消せません'); return; }
+        if (n && n.fixed) { this._flash('この部品は消せません'); this.hint('この部品は消せません', 'warn'); return; }
         this.circuit.remove(s.id);
+        this.hint('部品を消しました', 'info');
       }
       this.selected = null;
       this.render();

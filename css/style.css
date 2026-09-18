@@ -200,7 +200,13 @@ circle.port.armed{fill:#ffb347;stroke:#ff7a00;stroke-width:4;animation:portPulse
 .wire{fill:none;stroke:var(--unknown);stroke-width:3.4;stroke-linecap:round;pointer-events:none}
 .wire.v1{stroke:var(--on)} .wire.v0{stroke:var(--off)}
 .wire.selected{stroke:#ff8a00;stroke-dasharray:7 5}
-.wire-hit{fill:none;stroke:transparent;stroke-width:14;cursor:pointer}
+.wire-hit{fill:none;stroke:transparent;stroke-width:24;cursor:pointer}   /* 指でも押せる太さ */
+/* 選択中の線・部品を消すボタン */
+.del-btn{cursor:pointer}
+.del-btn circle{fill:#e02424;stroke:#fff;stroke-width:2.5}
+.del-btn circle.del-hit{fill:transparent;stroke:none}
+.del-btn path{stroke:#fff;stroke-width:2.6;stroke-linecap:round;fill:none}
+.del-btn:hover circle{fill:#b81b1b}
 .temp-wire{fill:none;stroke:#ff8a00;stroke-width:3;stroke-dasharray:7 5;pointer-events:none}
 .trash .trash-box{fill:#f4f7fb;stroke:#c3cede;stroke-width:2;stroke-dasharray:6 5}
 .trash .trash-icon{font-size:22px;text-anchor:middle}
