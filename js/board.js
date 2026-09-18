@@ -28,6 +28,7 @@
       this.view = { x: 0, y: 0, k: 1 };      // 盤面の表示位置と拡大率
       this.pointers = new Map();             // 画面に触れているポインタ
       this.pinch = null;
+      this.armed = null;                     // タップでつなぐときの「つなぎ元」端子
       this.values = new Map();
       this.loop = false;
       this._build();
@@ -76,10 +77,25 @@
       this._applyView();
     }
 
+    /* ---------------- 画面上の案内バー ---------------- */
+    hint(msg, kind) {
+      if (!this.$hint) return;
+      clearTimeout(this._hintTimer);
+      if (!msg) { this.$hint.hidden = true; return; }
+      this.$hint.className = 'board-hint' + (kind ? ' ' + kind : '');
+      this.$hint.innerHTML = msg;
+      this.$hint.hidden = false;
+      if (kind) this._hintTimer = setTimeout(() => { if (!this.armed) this.$hint.hidden = true; }, 2600);
+    }
+
     /* ---------------- 拡大縮小・画面移動 ---------------- */
     _buildZoomUI() {
       const wrap = this.svg.parentNode;
       if (!wrap) return;
+      this.$hint = document.createElement('div');
+      this.$hint.className = 'board-hint';
+      this.$hint.hidden = true;
+      wrap.appendChild(this.$hint);
       const el = document.createElement('div');
       el.className = 'board-zoom';
       el.innerHTML =
@@ -119,7 +135,7 @@
       this._applyView();
     }
 
-    resetView() { this.view = { x: 0, y: 0, k: 1 }; this._applyView(); }
+    resetView() { this._disarm(); this.view = { x: 0, y: 0, k: 1 }; this._applyView(); }
 
     _onWheel(e) {
       if (!(e.ctrlKey || e.metaKey)) return;             // 通常のホイールはページ送りのまま
@@ -187,6 +203,7 @@
     setNotation(n) { this.notation = n; this.render(); }
 
     render() {
+      if (this.armed && !this.circuit.nodes.has(this.armed.id)) this._disarm();
       const res = this.circuit.evaluate(null);
       this.values = res.value;
       this.loop = res.loop;
@@ -223,6 +240,18 @@
       return (this.selected && this.selected.type === 'node' && this.selected.id === n.id) ? ' selected' : '';
     }
 
+    /** 選択中（つなぎ元として待機中）の端子か */
+    _armedCls(id, dir, port) {
+      const a = this.armed;
+      return (a && a.id === id && a.dir === dir && a.port === port) ? ' armed' : '';
+    }
+
+    /** 指でも押せる広さの端子エリア（見た目は透明） */
+    _portZone(id, dir, port, x, y, w, h) {
+      return '<rect class="port port-zone" data-id="' + id + '" data-dir="' + dir + '" data-port="' + port +
+             '" x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="9"/>';
+    }
+
     _gateSVG(n) {
       const g = GATES[n.type];
       const sym = LP.gateSymbol(n.type, this.notation);
@@ -239,12 +268,22 @@
       });
       s += '<line class="lead ' + cls(val) + '" x1="' + (14 + sym.right) + '" y1="' + (Hh / 2) + '" x2="' + W + '" y2="' + (Hh / 2) + '"/>';
       s += '<g class="sym" transform="translate(14,2)">' + sym.svg + '</g>';
+      // 端子エリア（入力は上下に分割、出力は右端）
+      if (g.inputs === 2) {
+        s += this._portZone(n.id, 'in', 0, -14, -10, 40, 34);
+        s += this._portZone(n.id, 'in', 1, -14, 24, 40, 34);
+      } else {
+        s += this._portZone(n.id, 'in', 0, -14, -6, 40, 60);
+      }
+      s += this._portZone(n.id, 'out', 0, 78, -6, 36, 60);
       ys.forEach((y, p) => {
         const w = this.circuit.wireInto(n.id, p);
         const v = w ? this.values.get(w.from) : null;
-        s += '<circle class="port port-in ' + cls(v) + (w ? ' connected' : '') + '" data-id="' + n.id + '" data-dir="in" data-port="' + p + '" cx="0" cy="' + y + '" r="7"/>';
+        s += '<circle class="port port-in ' + cls(v) + (w ? ' connected' : '') + this._armedCls(n.id, 'in', p) +
+             '" data-id="' + n.id + '" data-dir="in" data-port="' + p + '" cx="0" cy="' + y + '" r="7"/>';
       });
-      s += '<circle class="port port-out ' + cls(val) + '" data-id="' + n.id + '" data-dir="out" data-port="0" cx="' + W + '" cy="' + (Hh / 2) + '" r="7"/>';
+      s += '<circle class="port port-out ' + cls(val) + this._armedCls(n.id, 'out', 0) +
+           '" data-id="' + n.id + '" data-dir="out" data-port="0" cx="' + W + '" cy="' + (Hh / 2) + '" r="7"/>';
       return s + '</g>';
     }
 
@@ -260,7 +299,9 @@
       s += '<text class="sw-val" x="47" y="26">' + (n.value ? 1 : 0) + '</text>';
       s += '</g>';
       s += '<line class="lead ' + cls(v) + '" x1="66" y1="20" x2="76" y2="20"/>';
-      s += '<circle class="port port-out ' + cls(v) + '" data-id="' + n.id + '" data-dir="out" data-port="0" cx="76" cy="20" r="7"/>';
+      s += this._portZone(n.id, 'out', 0, 62, -6, 34, 52);
+      s += '<circle class="port port-out ' + cls(v) + this._armedCls(n.id, 'out', 0) +
+           '" data-id="' + n.id + '" data-dir="out" data-port="0" cx="76" cy="20" r="7"/>';
       return s + '</g>';
     }
 
@@ -275,7 +316,9 @@
       s += '<circle class="lamp ' + cls(v) + '" cx="32" cy="20" r="11"/>';
       s += '<text class="lamp-val ' + cls(v) + '" x="32" y="25">' + (v === null || v === undefined ? '' : v) + '</text>';
       s += '<text class="pin-label" x="57" y="27">' + n.label + '</text>';
-      s += '<circle class="port port-in ' + cls(v) + (w ? ' connected' : '') + '" data-id="' + n.id + '" data-dir="in" data-port="0" cx="0" cy="20" r="7"/>';
+      s += this._portZone(n.id, 'in', 0, -16, -6, 34, 52);
+      s += '<circle class="port port-in ' + cls(v) + (w ? ' connected' : '') + this._armedCls(n.id, 'in', 0) +
+           '" data-id="' + n.id + '" data-dir="in" data-port="0" cx="0" cy="20" r="7"/>';
       return s + '</g>';
     }
 
@@ -381,6 +424,7 @@
         n.x = p.x - this.drag.dx;
         n.y = p.y - this.drag.dy;
         this._clamp(n);
+        if (!this.drag.moved) this._disarm();
         this.drag.moved = true;
         this.drag.dist = Math.max(this.drag.dist || 0,
           Math.abs(e.clientX - (this.drag.startX || e.clientX)) + Math.abs(e.clientY - (this.drag.startY || e.clientY)));
@@ -415,7 +459,7 @@
       if (!d) return;
 
       if (d.mode === 'pan') {
-        if (!d.moved) this.select(null);
+        if (!d.moved) { this._disarm(); this.select(null); }
         return;
       }
       const p = this.toBoard(e);
@@ -432,40 +476,89 @@
           return;
         }
         if (d.isNew && outside) { this._autoPlace(n); this.render(); return; }   // クリックだけなら空きマスへ
-        if (!d.moved) this.select({ type: 'node', id: n.id });
+        if (!d.moved) {
+          // つなぎ元が待機中なら、部品本体をタップするだけでつながる
+          if (this.armed && this.armed.id !== n.id) { this._connectToNode(n); return; }
+          this._disarm();
+          this.select({ type: 'node', id: n.id });
+        }
         this.render();
         return;
       }
 
       if (d.mode === 'wire') {
+        if (!d.moved) { this._tapPort(d); return; }          // ドラッグせず離した＝タップ
         const el = document.elementFromPoint(e.clientX, e.clientY);
         const target = el && el.closest ? el.closest('.port') : null;
-        if (!target) {
-          // 端子の上で押して離しただけ → 入力側なら配線を外す
-          if (!d.moved && d.dir === 'in') {
-            const w = this.circuit.wireInto(d.id, d.port);
-            if (w) { this.circuit.removeWire(w.id); this.render(); }
-          }
-          return;
-        }
-        const tid = target.getAttribute('data-id');
-        const tdir = target.getAttribute('data-dir');
-        const tport = +target.getAttribute('data-port');
-        if (tid === d.id && tdir === d.dir && tport === d.port) {
-          if (d.dir === 'in') {
-            const w = this.circuit.wireInto(d.id, d.port);
-            if (w) { this.circuit.removeWire(w.id); this.render(); }
-          }
-          return;
-        }
-        if (tdir === d.dir) { this._flash('出力どうし・入力どうしはつなげません'); return; }
-        const from = d.dir === 'out' ? d.id : tid;
-        const to = d.dir === 'out' ? tid : d.id;
-        const port = d.dir === 'out' ? tport : d.port;
-        if (from === to) { this._flash('同じ部品どうしはつなげません'); return; }
-        this.circuit.connect(from, to, port);
-        this.render();
+        if (!target) { this._disarm(); this.render(); return; }
+        const t = {
+          id: target.getAttribute('data-id'),
+          dir: target.getAttribute('data-dir'),
+          port: +target.getAttribute('data-port')
+        };
+        if (t.id === d.id && t.dir === d.dir && t.port === d.port) { this.render(); return; }
+        this._connect(d, t);
       }
+    }
+
+    /* ---------------- タップでつなぐ ---------------- */
+    _disarm() { if (this.armed) { this.armed = null; this.hint(null); } }
+
+    /** 端子をタップしたとき */
+    _tapPort(p) {
+      const a = this.armed;
+      if (a && a.id === p.id && a.dir === p.dir && a.port === p.port) {
+        // 同じ端子をもう一度タップ → 待機を取り消し（つながっていれば線を外す）
+        this._disarm();
+        if (p.dir === 'in') {
+          const w = this.circuit.wireInto(p.id, p.port);
+          if (w) { this.circuit.removeWire(w.id); this.hint('線を外しました', 'info'); }
+        }
+        this.render();
+        return;
+      }
+      if (a) { this._connect(a, p); return; }
+      this.armed = { id: p.id, dir: p.dir, port: p.port };
+      this.select(null);
+      this.hint(p.dir === 'out'
+        ? 'つなぎ先の<b>入力（左）</b>をタップ　―　部品の本体でも OK'
+        : 'つなぎ元の<b>出力（右）</b>をタップ　―　部品の本体でも OK');
+      this.render();
+    }
+
+    /** 待機中の端子と、タップされた部品本体をつなぐ */
+    _connectToNode(n) {
+      const a = this.armed;
+      if (!a) return;
+      if (a.dir === 'out') {
+        if (n.kind === 'in') { this.hint('入力スイッチには線を入れられません', 'warn'); this.render(); return; }
+        const k = LP.arity(n);
+        let port = 0;
+        for (let q = 0; q < k; q++) if (!this.circuit.wireInto(n.id, q)) { port = q; break; }
+        this._connect(a, { id: n.id, dir: 'in', port: port });
+      } else {
+        if (n.kind === 'out') { this.hint('出力ランプからは線を出せません', 'warn'); this.render(); return; }
+        this._connect(a, { id: n.id, dir: 'out', port: 0 });
+      }
+    }
+
+    /** 2 つの端子をつなぐ（向きが同じならつなぎ元を持ち替える） */
+    _connect(a, b) {
+      if (a.dir === b.dir) {                       // 出力どうし・入力どうし → 持ち替え
+        this.armed = { id: b.id, dir: b.dir, port: b.port };
+        this.hint(b.dir === 'out' ? 'つなぎ元を持ち替えました　―　つなぎ先の<b>入力</b>をタップ'
+                                  : 'つなぎ先を持ち替えました　―　つなぎ元の<b>出力</b>をタップ');
+        this.render();
+        return;
+      }
+      if (a.id === b.id) { this._disarm(); this.hint('同じ部品どうしはつなげません', 'warn'); this.render(); return; }
+      if (!this.circuit.nodes.has(a.id) || !this.circuit.nodes.has(b.id)) { this._disarm(); this.render(); return; }
+      const from = a.dir === 'out' ? a.id : b.id;
+      const to   = a.dir === 'out' ? b.id : a.id;
+      const port = a.dir === 'out' ? b.port : a.port;
+      this.circuit.connect(from, to, port);
+      this._disarm();
+      this.render();
     }
 
     _onDblClick(e) {
